@@ -8,6 +8,10 @@ use structopt::StructOpt;
 use unicode_segmentation::UnicodeSegmentation;
 
 #[derive(StructOpt)]
+/// Print newline, word, and byte counts for each FILE, and a total line if more than one FILE is
+/// specified.  A word is a non-zero-length sequence of characters delimited by white space.
+///
+/// With no FILE, or when FILE is -, read standard input.
 struct Args {
     #[structopt(name="FILE")]
     files: Vec<String>,
@@ -150,6 +154,10 @@ fn main() -> Result<()> {
     }
 
     files_from(&mut args)?;
+
+    if args.files.len() == 0 {
+        args.files.push("-".to_owned());
+    }
 
     let mut counts = Counts::default();
 
