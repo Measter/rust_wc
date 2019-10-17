@@ -1,12 +1,14 @@
 use std::{
     fs::{File},
-    io::{Read, BufRead, BufReader, stdin},
+    io::{self, Write, Read, BufRead, BufReader, stdin, stdout},
     path::Path,
     str::from_utf8,
 };
 
 use structopt::StructOpt;
 use unicode_segmentation::UnicodeSegmentation;
+use rayon::prelude::*;
+use itertools::Itertools;
 
 #[derive(StructOpt)]
 /// Print newline, word, and byte counts for each FILE, and a total line if more than one FILE is
@@ -53,7 +55,7 @@ impl Args {
     }
 }
 
-type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+type MyResult<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 #[derive(Default)]
 struct Counts {
@@ -74,31 +76,35 @@ impl Counts {
     }
 
     fn print(&self, args: &Args, file: &str) {
+        // Might be printing from multiple threads, so need to lock it first.
+        let stdout = stdout();
+        let mut lock = stdout.lock();
+
         if args.count_lines {
-            print!(" {}", self.lines);
+            write!(&mut lock, " {}", self.lines).expect("Failed to write to stdout!");
         }
 
         if args.count_words {
-            print!(" {}", self.words);
+            write!(&mut lock, " {}", self.words).expect("Failed to write to stdout!");
         }
 
         if args.count_chars {
-            print!(" {}", self.chars);
+            write!(&mut lock, " {}", self.chars).expect("Failed to write to stdout!");
         }
 
         if args.count_bytes {
-            print!(" {}", self.bytes);
+            write!(&mut lock, " {}", self.bytes).expect("Failed to write to stdout!");
         }
 
         if args.max_line_length {
-            print!(" {}", self.max_line_len);
+            write!(&mut lock, " {}", self.max_line_len).expect("Failed to write to stdout!");
         }
 
-        println!(" {}", file);
+        writeln!(&mut lock, " {}", file).expect("Failed to write to stdout!");
     }
 }
 
-fn count_file<R: Read>(args: &Args, file: R, file_path: Option<&str>) -> Result<Counts> {
+fn count_file<R: Read>(args: &Args, file: R, file_path: Option<&str>) -> Result<Counts, io::Error> {
     let mut buffer = BufReader::new(file);
 
     let mut line_buf = String::new();
@@ -145,8 +151,8 @@ fn count_file<R: Read>(args: &Args, file: R, file_path: Option<&str>) -> Result<
     Ok(counts)
 }
 
-fn files_from(args: &mut Args) -> Result<()> {
-    fn read_func<R: Read>(source: R, args: &mut Args) -> Result<()> {
+fn files_from(args: &mut Args) -> MyResult<()> {
+    fn read_func<R: Read>(source: R, args: &mut Args) -> MyResult<()> {
         let mut buffer = BufReader::new(source);
         let mut line_buf = Vec::new();
 
@@ -173,7 +179,7 @@ fn files_from(args: &mut Args) -> Result<()> {
     Ok(())
 }
 
-fn main() -> Result<()> {
+fn main() -> MyResult<()> {
     let mut args = Args::from_args();
 
     if !args.count_bytes && !args.count_chars && !args.count_words && !args.count_lines {
@@ -191,18 +197,46 @@ fn main() -> Result<()> {
 
     let mut counts = Counts::default();
 
-    for file_path in &args.files {
-        let file_counts = if file_path.trim() == "-" {
-            let file = stdin();
-            count_file(&args, file, None)?
+    // We can parallelize file reading, as order doesn't matter there.
+    // However, we cannot do the same with stdin as it may appear multiple times,
+    // so we need to group the files by whether it's stdin or not.
+    for (is_stdin, group) in &args.files.iter().group_by(|f| f.trim() == "-") {
+        // Single-threaded handling here.
+        if is_stdin {
+            for _ in group {
+                let file = stdin();
+                let file_counts = count_file(&args, file, None)?;
+
+                file_counts.print(&args, "-");
+                counts.merge_with(&file_counts);
+            }
         } else {
-            let file = File::open(&file_path)?;
-            count_file(&args, file, Some(&file_path))?
-        };
+            // We're processing files, so do them in parallel.
 
-        file_counts.print(&args, file_path);
+            // I'm not sure how to get around collecting here.
+            let files: Vec<_> = group.collect();
+            let file_counts: Result<Counts, io::Error> = files.par_iter()
+                .try_fold(
+                    || Counts::default(),
+                    |mut acc, file_path| {
+                        let file = File::open(&file_path)?;
+                        let count = count_file(&args, file, Some(&file_path))?;
+                        count.print(&args, &file_path);
 
-        counts.merge_with(&file_counts);
+                        acc.merge_with(&count);
+                        Ok(acc)
+                    }
+                )
+                .try_reduce(
+                    || Counts::default(),
+                    |mut a, b| {
+                        a.merge_with(&b);
+                        Ok(a)
+                    }
+                );
+
+            counts.merge_with(&file_counts?);
+        }
     }
 
     if args.files.len() > 1 {
