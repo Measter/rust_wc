@@ -1,6 +1,7 @@
 use std::{
     fs::{File},
     io::{Read, BufRead, BufReader, stdin},
+    path::Path,
     str::from_utf8,
 };
 
@@ -46,13 +47,19 @@ struct Args {
     files_from: Option<String>,
 }
 
+impl Args {
+    fn needs_read(&self) -> bool {
+        self.count_chars | self.count_words | self.count_lines | self.max_line_length
+    }
+}
+
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 #[derive(Default)]
 struct Counts {
     words: usize,
     lines: usize,
-    bytes: usize,
+    bytes: u64,
     chars: usize,
     max_line_len: usize,
 }
@@ -91,25 +98,48 @@ impl Counts {
     }
 }
 
-fn count_file<R: Read>(args: &Args, file: R) -> Result<Counts> {
+fn count_file<R: Read>(args: &Args, file: R, file_path: Option<&str>) -> Result<Counts> {
     let mut buffer = BufReader::new(file);
 
     let mut line_buf = String::new();
     let mut counts = Counts::default();
 
-    while buffer.read_line(&mut line_buf)? > 0 {
-        counts.lines += 1;
-        counts.bytes += line_buf.as_bytes().len();
-        counts.words += line_buf.split_whitespace().count();
-        counts.max_line_len = counts.max_line_len.max(line_buf.trim().as_bytes().len());
+    // If we need the byte length and this is a file, we can just query the file system.
+    match (file_path, args.count_bytes) {
+        (Some(file_path), true) => {
+            let path = Path::new(file_path);
+            let meta = path.metadata()?;
+            counts.bytes = meta.len();
+        },
+        _ => {}
+    }
 
-        if args.utf_chars {
-            counts.chars += line_buf.graphemes(true).count();
-        } else {
-            counts.chars += line_buf.chars().count();
+    // Input might be from stdin, so we may need to read the stream even if it's just byte count.
+    if args.needs_read() || file_path.is_none() {
+        while buffer.read_line(&mut line_buf)? > 0 {
+            counts.lines += 1;
+            counts.max_line_len = counts.max_line_len.max(line_buf.trim().as_bytes().len());
+
+            // If this isn't a file, we need to count the bytes in here.
+            if file_path.is_none() && args.count_bytes {
+                counts.bytes += line_buf.as_bytes().len() as u64;
+            }
+
+            // These are the two expensive ones, so put them behind a flag.
+            if args.count_words {
+                counts.words += line_buf.split_whitespace().count();
+            }
+
+            if args.count_chars {
+                if args.utf_chars {
+                    counts.chars += line_buf.graphemes(true).count();
+                } else {
+                    counts.chars += line_buf.chars().count();
+                }
+            }
+
+            line_buf.clear();
         }
-
-        line_buf.clear();
     }
 
     Ok(counts)
@@ -161,16 +191,16 @@ fn main() -> Result<()> {
 
     let mut counts = Counts::default();
 
-    for file in &args.files {
-        let file_counts = if file.trim() == "-" {
+    for file_path in &args.files {
+        let file_counts = if file_path.trim() == "-" {
             let file = stdin();
-            count_file(&args, file)?
+            count_file(&args, file, None)?
         } else {
-            let file = File::open(&file)?;
-            count_file(&args, file)?
+            let file = File::open(&file_path)?;
+            count_file(&args, file, Some(&file_path))?
         };
 
-        file_counts.print(&args, file);
+        file_counts.print(&args, file_path);
 
         counts.merge_with(&file_counts);
     }
