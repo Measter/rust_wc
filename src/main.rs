@@ -124,7 +124,6 @@ fn count_file<R: Read>(args: &Args, file: R, file_path: Option<&str>) -> Result<
     if args.needs_read() || file_path.is_none() {
         while buffer.read_line(&mut line_buf)? > 0 {
             counts.lines += 1;
-            counts.max_line_len = counts.max_line_len.max(line_buf.trim().as_bytes().len());
 
             // If this isn't a file, we need to count the bytes in here.
             if file_path.is_none() && args.count_bytes {
@@ -136,12 +135,14 @@ fn count_file<R: Read>(args: &Args, file: R, file_path: Option<&str>) -> Result<
                 counts.words += line_buf.split_whitespace().count();
             }
 
-            if args.count_chars {
+            if args.count_chars || args.max_line_length {
                 if args.utf_chars {
                     counts.chars += line_buf.graphemes(true).count();
+                    counts.max_line_len = counts.max_line_len.max(line_buf.trim_end_matches('\n').graphemes(true).count());
                 } else {
                     counts.chars += line_buf.chars().count();
-                }
+                    counts.max_line_len = counts.max_line_len.max(line_buf.trim_end_matches('\n').chars().count());
+                };
             }
 
             line_buf.clear();
