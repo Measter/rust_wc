@@ -10,6 +10,9 @@ use unicode_segmentation::UnicodeSegmentation;
 use rayon::prelude::*;
 use itertools::Itertools;
 
+// The line characters to use when counting maximum line length.
+const LINE_CHARS: &[char] = &['\n', '\r', '\u{0C}'];
+
 #[derive(StructOpt)]
 /// Print newline, word, and byte counts for each FILE, and a total line if more than one FILE is
 /// specified.  A word is a non-zero-length sequence of characters delimited by white space.
@@ -136,13 +139,23 @@ fn count_file<R: Read>(args: &Args, file: R, file_path: Option<&str>) -> Result<
             }
 
             if args.count_chars || args.max_line_length {
-                if args.utf_chars {
-                    counts.chars += line_buf.graphemes(true).count();
-                    counts.max_line_len = counts.max_line_len.max(line_buf.trim_end_matches('\n').graphemes(true).count());
-                } else {
-                    counts.chars += line_buf.chars().count();
-                    counts.max_line_len = counts.max_line_len.max(line_buf.trim_end_matches('\n').chars().count());
+                let count = match args.utf_chars {
+                    true  => line_buf.graphemes(true).count(),
+                    false => line_buf.chars().count(),
                 };
+
+                counts.chars += count;
+                let line_len = match line_buf.ends_with(LINE_CHARS) { // 0xC is form feed.
+                    true  => {
+                        // line break is a single-byte character, so we can just find the difference
+                        // between the byte lengths of the pre-trimmed and the trimmed version.
+                        let diff = line_buf.as_bytes().len() - line_buf.trim_end_matches(LINE_CHARS).as_bytes().len();
+                        count - diff
+                    },
+                    false => count,
+                };
+
+                counts.max_line_len = counts.max_line_len.max(line_len);
             }
 
             line_buf.clear();
