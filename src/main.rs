@@ -199,11 +199,12 @@ fn files_from(args: &mut Args) -> MyResult<()> {
 fn main() -> MyResult<()> {
     let mut args = Args::from_args();
 
-    if !args.count_bytes && !args.count_chars && !args.count_words && !args.count_lines {
+    if !args.count_bytes && !args.count_chars && !args.count_words && !args.count_lines && !args.max_line_length {
         args.count_bytes = true;
         args.count_chars = false;
         args.count_words = true;
         args.count_lines = true;
+        args.max_line_length = false;
     }
 
     files_from(&mut args)?;
