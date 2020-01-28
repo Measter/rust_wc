@@ -237,10 +237,8 @@ fn main() -> MyResult<()> {
                 .fold(
                     || Counts::default(),
                     |mut acc, file_path| {
-                        let count = (|| -> Result<_, _>{
-                            let file = File::open(&file_path)?;
-                            count_file(&args, file, Some(&file_path))
-                        })();
+                        let count = File::open(&file_path)
+                            .and_then(|file| count_file(&args, file, Some(&file_path)));
 
                         match count {
                             Ok(count) => {
