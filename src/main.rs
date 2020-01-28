@@ -229,27 +229,37 @@ fn main() -> MyResult<()> {
 
             // I'm not sure how to get around collecting here.
             let files: Vec<_> = group.collect();
-            let file_counts: Result<Counts, io::Error> = files.par_iter()
-                .try_fold(
+            let file_counts = files.par_iter()
+                .fold(
                     || Counts::default(),
                     |mut acc, file_path| {
-                        let file = File::open(&file_path)?;
-                        let count = count_file(&args, file, Some(&file_path))?;
-                        count.print(&args, &file_path);
+                        let count = (|| -> Result<_, _>{
+                            let file = File::open(&file_path)?;
+                            count_file(&args, file, Some(&file_path))
+                        })();
 
-                        acc.merge_with(&count);
-                        Ok(acc)
+                        match count {
+                            Ok(count) => {
+                                count.print(&args, &file_path);
+                                acc.merge_with(&count);
+                                acc
+                            },
+                            Err(e) => {
+                                eprintln!("wc_r: {}: {}", &file_path, e);
+                                acc
+                            }
+                        }
                     }
                 )
-                .try_reduce(
+                .reduce(
                     || Counts::default(),
                     |mut a, b| {
                         a.merge_with(&b);
-                        Ok(a)
+                        a
                     }
                 );
 
-            counts.merge_with(&file_counts?);
+            counts.merge_with(&file_counts);
         }
     }
 
