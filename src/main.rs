@@ -18,6 +18,9 @@ const LINE_CHARS: &[char] = &['\n', '\r', '\u{0C}'];
 /// specified.  A word is a non-zero-length sequence of characters delimited by white space.
 ///
 /// With no FILE, or when FILE is -, read standard input.
+///
+/// The options below may be used to select which counts are printed, always in the following order:
+/// newline, word, character, byte, maximum line length.
 struct Args {
     #[structopt(name="FILE")]
     files: Vec<String>,
