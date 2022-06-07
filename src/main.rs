@@ -1,19 +1,19 @@
 use std::{
-    fs::{File},
-    io::{self, Write, Read, BufRead, BufReader, stdin, stdout},
+    fs::File,
+    io::{self, stdin, stdout, BufRead, BufReader, Read, Write},
     path::Path,
     str::from_utf8,
 };
 
-use structopt::StructOpt;
-use unicode_segmentation::UnicodeSegmentation;
-use rayon::prelude::*;
+use clap::Parser;
 use itertools::Itertools;
+use rayon::prelude::*;
+use unicode_segmentation::UnicodeSegmentation;
 
 // The line characters to use when counting maximum line length.
 const LINE_CHARS: &[char] = &['\n', '\r', '\u{0C}'];
 
-#[derive(StructOpt)]
+#[derive(Parser)]
 /// Print newline, word, and byte counts for each FILE, and a total line if more than one FILE is
 /// specified.  A word is a non-zero-length sequence of characters delimited by white space.
 ///
@@ -22,34 +22,34 @@ const LINE_CHARS: &[char] = &['\n', '\r', '\u{0C}'];
 /// The options below may be used to select which counts are printed, always in the following order:
 /// newline, word, character, byte, maximum line length.
 struct Args {
-    #[structopt(name="FILE")]
+    #[clap(name = "FILE")]
     files: Vec<String>,
 
-    #[structopt(short="c", long="bytes")]
+    #[clap(short = 'c', long = "bytes")]
     /// print the byte counts
     count_bytes: bool,
 
-    #[structopt(short="m", long="chars")]
+    #[clap(short = 'm', long = "chars")]
     /// print the character counts
     count_chars: bool,
 
-    #[structopt(short="w", long="words")]
+    #[clap(short = 'w', long = "words")]
     /// print the word counts
     count_words: bool,
 
-    #[structopt(short="l", long="lines")]
+    #[clap(short = 'l', long = "lines")]
     /// print the newline counts
     count_lines: bool,
 
-    #[structopt(short="L", long)]
+    #[clap(short = 'L', long)]
     /// print the maximum display width
     max_line_length: bool,
 
-    #[structopt(long)]
+    #[clap(long)]
     /// Count chars using Unicode graphemes, not code points.
     utf_chars: bool,
 
-    #[structopt(long="files0-from", name="F")]
+    #[clap(long = "files0-from", name = "F")]
     /// read input from the files specified by NUL-terminated names in file F;
     /// If F is - then read names from standard input
     files_from: Option<String>,
@@ -117,13 +117,10 @@ fn count_file<R: Read>(args: &Args, file: R, file_path: Option<&str>) -> Result<
     let mut counts = Counts::default();
 
     // If we need the byte length and this is a file, we can just query the file system.
-    match (file_path, args.count_bytes) {
-        (Some(file_path), true) => {
-            let path = Path::new(file_path);
-            let meta = path.metadata()?;
-            counts.bytes = meta.len();
-        },
-        _ => {}
+    if let (Some(file_path), true) = (file_path, args.count_bytes) {
+        let path = Path::new(file_path);
+        let meta = path.metadata()?;
+        counts.bytes = meta.len();
     }
 
     // Input might be from stdin, so we may need to read the stream even if it's just byte count.
@@ -143,18 +140,20 @@ fn count_file<R: Read>(args: &Args, file: R, file_path: Option<&str>) -> Result<
 
             if args.count_chars || args.max_line_length {
                 let count = match args.utf_chars {
-                    true  => line_buf.graphemes(true).count(),
+                    true => line_buf.graphemes(true).count(),
                     false => line_buf.chars().count(),
                 };
 
                 counts.chars += count;
-                let line_len = match line_buf.ends_with(LINE_CHARS) { // 0xC is form feed.
-                    true  => {
+                let line_len = match line_buf.ends_with(LINE_CHARS) {
+                    // 0xC is form feed.
+                    true => {
                         // line break is a single-byte character, so we can just find the difference
                         // between the byte lengths of the pre-trimmed and the trimmed version.
-                        let diff = line_buf.as_bytes().len() - line_buf.trim_end_matches(LINE_CHARS).as_bytes().len();
+                        let diff = line_buf.as_bytes().len()
+                            - line_buf.trim_end_matches(LINE_CHARS).as_bytes().len();
                         count - diff
-                    },
+                    }
                     false => count,
                 };
 
@@ -197,9 +196,14 @@ fn files_from(args: &mut Args) -> MyResult<()> {
 }
 
 fn main() -> MyResult<()> {
-    let mut args = Args::from_args();
+    let mut args = Args::parse();
 
-    if !args.count_bytes && !args.count_chars && !args.count_words && !args.count_lines && !args.max_line_length {
+    if !args.count_bytes
+        && !args.count_chars
+        && !args.count_words
+        && !args.count_lines
+        && !args.max_line_length
+    {
         args.count_bytes = true;
         args.count_chars = false;
         args.count_words = true;
@@ -209,7 +213,7 @@ fn main() -> MyResult<()> {
 
     files_from(&mut args)?;
 
-    if args.files.len() == 0 {
+    if args.files.is_empty() {
         args.files.push("-".to_owned());
     }
 
@@ -233,33 +237,28 @@ fn main() -> MyResult<()> {
 
             // I'm not sure how to get around collecting here.
             let files: Vec<_> = group.collect();
-            let file_counts = files.par_iter()
-                .fold(
-                    || Counts::default(),
-                    |mut acc, file_path| {
-                        let count = File::open(&file_path)
-                            .and_then(|file| count_file(&args, file, Some(&file_path)));
+            let file_counts = files
+                .par_iter()
+                .fold(Counts::default, |mut acc, file_path| {
+                    let count = File::open(&file_path)
+                        .and_then(|file| count_file(&args, file, Some(&file_path)));
 
-                        match count {
-                            Ok(count) => {
-                                count.print(&args, &file_path);
-                                acc.merge_with(&count);
-                                acc
-                            },
-                            Err(e) => {
-                                eprintln!("wc_r: {}: {}", &file_path, e);
-                                acc
-                            }
+                    match count {
+                        Ok(count) => {
+                            count.print(&args, &file_path);
+                            acc.merge_with(&count);
+                            acc
+                        }
+                        Err(e) => {
+                            eprintln!("wc_r: {}: {}", &file_path, e);
+                            acc
                         }
                     }
-                )
-                .reduce(
-                    || Counts::default(),
-                    |mut a, b| {
-                        a.merge_with(&b);
-                        a
-                    }
-                );
+                })
+                .reduce(Counts::default, |mut a, b| {
+                    a.merge_with(&b);
+                    a
+                });
 
             counts.merge_with(&file_counts);
         }
